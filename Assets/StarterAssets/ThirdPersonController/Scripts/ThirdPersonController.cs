@@ -53,6 +53,15 @@ namespace StarterAssets
         [Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
         public bool Grounded = true;
 
+        // 공격/구르기 등 액션 중 이동·회전을 잠그는 플래그 (PlayerCombat이 제어)
+        [HideInInspector] public bool MovementLocked = false;
+
+        // 스태미나 고갈 시 달리기 차단 (PlayerCombat이 제어)
+        [HideInInspector] public bool SprintBlocked = false;
+
+        // 락온 대상 — 설정되면 몸이 항상 타겟을 향하는 스트레이프 이동 (LockOnSystem이 제어)
+        [HideInInspector] public Transform StrafeTarget = null;
+
         [Tooltip("Useful for rough ground")]
         public float GroundedOffset = -0.14f;
 
@@ -214,22 +223,32 @@ namespace StarterAssets
                 _cinemachineTargetYaw, 0.0f);
         }
 
+        // 락온 시스템이 카메라 각도를 직접 지정할 때 사용 (LockCameraPosition과 함께 씀)
+        public void SetCameraAngles(float yaw, float pitch)
+        {
+            _cinemachineTargetYaw = yaw;
+            _cinemachineTargetPitch = ClampAngle(pitch, BottomClamp, TopClamp);
+        }
+
         private void Move()
         {
+            // 액션 중에는 이동 입력을 0으로 취급 (키 입력 상태 자체는 건드리지 않음)
+            Vector2 moveInput = MovementLocked ? Vector2.zero : _input.move;
+
             // set target speed based on move speed, sprint speed and if sprint is pressed
-            float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+            float targetSpeed = (_input.sprint && !SprintBlocked) ? SprintSpeed : MoveSpeed;
 
             // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
             // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is no input, set the target speed to 0
-            if (_input.move == Vector2.zero) targetSpeed = 0.0f;
+            if (moveInput == Vector2.zero) targetSpeed = 0.0f;
 
             // a reference to the players current horizontal velocity
             float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
             float speedOffset = 0.1f;
-            float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
+            float inputMagnitude = _input.analogMovement ? moveInput.magnitude : 1f;
 
             // accelerate or decelerate to target speed
             if (currentHorizontalSpeed < targetSpeed - speedOffset ||
@@ -252,11 +271,28 @@ namespace StarterAssets
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
             // normalise input direction
-            Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
+            Vector3 inputDirection = new Vector3(moveInput.x, 0.0f, moveInput.y).normalized;
 
             // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is a move input rotate player when the player is moving
-            if (_input.move != Vector2.zero)
+            if (StrafeTarget != null && !MovementLocked)
+            {
+                // 락온 중: 몸은 항상 타겟을 향하고, 이동 방향으로는 회전하지 않음 (스트레이프)
+                Vector3 toTarget = StrafeTarget.position - transform.position;
+                toTarget.y = 0.0f;
+                if (toTarget.sqrMagnitude > 0.001f)
+                {
+                    transform.rotation = Quaternion.Slerp(transform.rotation,
+                        Quaternion.LookRotation(toTarget), Time.deltaTime * 12f);
+                }
+
+                if (moveInput != Vector2.zero)
+                {
+                    _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
+                                      _mainCamera.transform.eulerAngles.y;
+                }
+            }
+            else if (moveInput != Vector2.zero)
             {
                 _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
                                   _mainCamera.transform.eulerAngles.y;

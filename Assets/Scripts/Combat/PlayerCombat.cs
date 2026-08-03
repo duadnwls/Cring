@@ -20,16 +20,24 @@ public class PlayerCombat : MonoBehaviour
     [SerializeField] float attackDamage = 20f;
     [SerializeField] float attackReach = 1.5f;    // 판정 구체 중심까지의 전방 거리
     [SerializeField] float attackRadius = 1.1f;   // 판정 구체 반지름
-    [SerializeField] float attackLunge = 1.5f;    // 휘두를 때 전진(m/s)
+    [Tooltip("휘두를 때 앞으로 나가는 속도(m/s). 0이면 제자리에서 공격한다.")]
+    [SerializeField] float attackLunge = 0f;
     [SerializeField, Range(0f, 1f)] float hitMoment = 0.38f;   // 데미지 판정 시점 (정규화 시간)
     [SerializeField, Range(0f, 1f)] float comboMoment = 0.55f; // 이후부터 다음 액션으로 캔슬 가능
     [SerializeField] LayerMask hittableLayers = ~0;
 
     [Header("구르기")]
-    [SerializeField] float rollDistance = 3.5f;                    // 구르기 총 이동 거리(m)
-    [SerializeField, Range(0.1f, 1f)] float rollMoveEnd = 0.55f;   // 이 시점(정규화)까지 이동을 마침
-    [SerializeField, Range(0f, 1f)] float iframeStart = 0.05f;
+    [SerializeField] float rollDistance = 3.2f;        // 구르기 총 이동 거리(m)
+    [Tooltip("이동에 걸리는 시간(초). 클립 길이와 무관하게 고정 — 클립이 짧아도 순간이동처럼 되지 않는다.")]
+    [SerializeField] float rollMoveDuration = 0.62f;
+    [SerializeField, Range(0f, 1f)] float iframeStart = 0.03f;
     [SerializeField, Range(0f, 1f)] float iframeEnd = 0.6f;
+
+    [Header("구르기 반응성")]
+    [Tooltip("구르기 전환 블렌딩 시간(초). 짧을수록 즉각적으로 느껴진다.")]
+    [SerializeField] float rollCrossFade = 0.02f;
+    [Tooltip("클립 앞부분의 준비 동작을 건너뛰는 비율(0~0.3).")]
+    [SerializeField, Range(0f, 0.3f)] float rollStartSkip = 0.06f;
 
     [Header("스태미나 소모")]
     [SerializeField] float attackStaminaCost = 22f;
@@ -46,10 +54,11 @@ public class PlayerCombat : MonoBehaviour
     const string RollStateName = "Roll";
     const string HitStateName = "Hit";
     const string DeathStateName = "Death";
-    const string Attack1ClipName = "Great Sword Slash";
-    const string Attack2ClipName = "Great Sword Slash 2";
-    const string RollClipName = "Stand To Roll";
-    const string HitClipName = "Standing React Large From Front";
+    // 클립 이름은 NewPlayerAnimationSetup이 임포트할 때 이 짧은 이름으로 바꿔준다
+    const string Attack1ClipName = "Slash1";
+    const string Attack2ClipName = "Slash2";
+    const string RollClipName = "Dive";
+    const string HitClipName = "Impact";
     const float InputBufferSeconds = 0.35f; // 선입력 유지 시간
 
     Animator _animator;
@@ -66,6 +75,7 @@ public class PlayerCombat : MonoBehaviour
     float _rollBufferedUntil = -1f;
     bool _didHit;
     Vector3 _rollDir;
+    float _rollMoveElapsed;
     float _attack1Len = 1f, _attack2Len = 1f, _rollLen = 1f, _hitLen = 1f;
     readonly HashSet<Health> _hitThisSwing = new HashSet<Health>();
 
@@ -96,6 +106,8 @@ public class PlayerCombat : MonoBehaviour
     void HandleDamaged(float amount, Vector3 hitFrom)
     {
         if (_health.IsDead) return;
+        GameAudio.PlayerHit();   // 때릴 때와 같은 타격음 — 맞는 감각을 똑같이 준다
+        GameAudio.PlayerHurt();  // 신음 소리(파일이 있으면)
         StartHitStun();
     }
 
@@ -106,7 +118,24 @@ public class PlayerCombat : MonoBehaviour
         var lockOn = GetComponent<LockOnSystem>();
         if (lockOn != null) lockOn.Unlock();
         _animator.CrossFadeInFixedTime(DeathStateName, 0.1f);
-        // 리스폰 처리는 GameLoop(Day 5)에서
+        GameAudio.PlayerDeath();
+        GameAudio.StopBgm();
+        // 리스폰은 GameManager가 처리
+    }
+
+    /// <summary>리스폰 시 전투 상태를 초기값으로 되돌린다.</summary>
+    public void ResetCombatState()
+    {
+        _state = State.Locomotion;
+        _stateTime = 0f;
+        _attackBufferedUntil = -1f;
+        _rollBufferedUntil = -1f;
+        _didHit = false;
+        _hitThisSwing.Clear();
+        _health.Invulnerable = false;
+        _tpc.MovementLocked = false;
+        _tpc.SprintBlocked = false;
+        _animator.CrossFadeInFixedTime(locomotionStateName, 0.1f);
     }
 
     float FindClipLength(string clipName)
@@ -202,8 +231,8 @@ public class PlayerCombat : MonoBehaviour
             DoHit();
         }
 
-        // 휘두르는 동안 살짝 전진 (묵직한 발 디딤 느낌)
-        if (n > 0.15f && n < 0.45f)
+        // 휘두르는 동안 살짝 전진 (묵직한 발 디딤 느낌). 0이면 제자리 공격.
+        if (attackLunge > 0f && n > 0.15f && n < 0.45f)
             _controller.Move(transform.forward * (attackLunge * Time.deltaTime));
 
         // 캔슬 윈도우: 구르기 우선, 그다음 콤보
@@ -234,9 +263,12 @@ public class PlayerCombat : MonoBehaviour
         // 무적 프레임
         _health.Invulnerable = n >= iframeStart && n <= iframeEnd;
 
-        // 구르기 이동: rollMoveEnd 시점까지 정확히 rollDistance만큼 이동
-        float progress = Mathf.Clamp01(n / rollMoveEnd);
-        float prevProgress = Mathf.Clamp01(prevN / rollMoveEnd);
+        // 구르기 이동: rollMoveDuration 동안 rollDistance만큼.
+        // 클립 길이가 아니라 실제 시간을 기준으로 삼아야 속도가 예측 가능하다.
+        float prevMove = _rollMoveElapsed;
+        _rollMoveElapsed += Time.deltaTime;
+        float progress = RollEase(Mathf.Clamp01(_rollMoveElapsed / rollMoveDuration));
+        float prevProgress = RollEase(Mathf.Clamp01(prevMove / rollMoveDuration));
         _controller.Move(_rollDir * (rollDistance * (progress - prevProgress)));
 
         // 구르기 후반부 캔슬: 공격 또는 연속 구르기
@@ -258,6 +290,12 @@ public class PlayerCombat : MonoBehaviour
         if (n >= 0.85f)
             EndAction();
     }
+
+    /// <summary>
+    /// 부드럽게 가속했다가 감속 (smoothstep). 이전의 급가속 곡선은 첫 프레임에
+    /// 거리를 너무 많이 벌어서 순간이동처럼 보이고 카메라가 따라가지 못했다.
+    /// </summary>
+    static float RollEase(float t) => t * t * (3f - 2f * t);
 
     void StartHitStun()
     {
@@ -286,6 +324,7 @@ public class PlayerCombat : MonoBehaviour
         _health.Invulnerable = false;
         _tpc.MovementLocked = true;
         _animator.CrossFadeInFixedTime(first ? Attack1StateName : Attack2StateName, crossFade);
+        GameAudio.PlayerSwing();
     }
 
     void StartRoll()
@@ -293,7 +332,9 @@ public class PlayerCombat : MonoBehaviour
         _stamina.Spend(rollStaminaCost);
         _rollBufferedUntil = -1f;
         _state = State.Roll;
-        _stateTime = 0f;
+        // 준비 동작을 건너뛴 지점에서 시작하므로 진행 시간도 그만큼 앞당겨 맞춘다
+        _stateTime = _rollLen * rollStartSkip;
+        _rollMoveElapsed = 0f;
         _tpc.MovementLocked = true;
 
         // 구르기 방향: 이동 입력(카메라 기준), 입력 없으면 현재 바라보는 방향
@@ -309,7 +350,9 @@ public class PlayerCombat : MonoBehaviour
         }
         transform.rotation = Quaternion.LookRotation(_rollDir);
 
-        _animator.CrossFadeInFixedTime(RollStateName, crossFade);
+        // 짧은 블렌딩 + 준비 구간을 건너뛴 시점부터 재생 → 키를 누른 즉시 튀어나가는 느낌
+        _animator.CrossFadeInFixedTime(RollStateName, rollCrossFade, 0, _rollLen * rollStartSkip);
+        GameAudio.PlayerRoll();
     }
 
     void EndAction()
@@ -330,6 +373,12 @@ public class PlayerCombat : MonoBehaviour
 
             _hitThisSwing.Add(target);
             target.TakeDamage(attackDamage, transform.position);
+
+            // 타격감: 맞은 지점에서 순간 정지 + 카메라 흔들림 + 불꽃
+            Vector3 contact = col.ClosestPoint(center);
+            CombatFeedback.Impact(contact, hitStop: 0.075f, shakeAmplitude: 0.45f, particleCount: 26);
+            GameAudio.PlayerHit();
+            GameAudio.BossHurt();
         }
     }
 

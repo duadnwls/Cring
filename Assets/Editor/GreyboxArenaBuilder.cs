@@ -71,9 +71,14 @@ public static class GreyboxArenaBuilder
             pillar.GetComponent<MeshRenderer>().sharedMaterial = wallMat;
         }
 
-        // NavMesh 베이크와 라이팅을 위해 아레나 전체를 Static으로
+        // 배칭/오클루전용 Static만 켠다. ContributeGI를 켜면 자동 라이트 베이크가 돌면서
+        // 플레이할 때마다 조명이 달라 보이므로 제외한다 (조명은 전부 실시간).
+        // NavMesh는 NavMeshSurface가 자식 오브젝트를 직접 수집하므로 별도 플래그가 필요 없다.
+        const StaticEditorFlags arenaStaticFlags =
+            StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic |
+            StaticEditorFlags.BatchingStatic;
         foreach (var t in arenaRoot.GetComponentsInChildren<Transform>(true))
-            GameObjectUtility.SetStaticEditorFlags(t.gameObject, (StaticEditorFlags)~0);
+            GameObjectUtility.SetStaticEditorFlags(t.gameObject, arenaStaticFlags);
 
         // 보스 스폰 위치 마커 (Day 4에서 사용)
         var bossSpawn = new GameObject("BossSpawnPoint");

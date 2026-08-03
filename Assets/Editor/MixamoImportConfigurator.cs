@@ -29,10 +29,14 @@ public static class MixamoImportConfigurator
                 clip.name = Path.GetFileNameWithoutExtension(path); // "mixamo.com" → 파일명으로
                 clip.loopTime = loop;
                 clip.lockRootRotation = true;   // 회전은 코드가 담당
-                clip.lockRootHeightY = true;    // 높이 고정 (바닥 뚫힘 방지)
+                clip.lockRootHeightY = true;    // 높이 고정 (바닥 뚫림/떠오름 방지)
                 clip.keepOriginalOrientation = true;
-                clip.keepOriginalPositionY = true;
                 clip.keepOriginalPositionXZ = false;
+
+                // 루트 Y 기준을 "발"로 잡는다. "Original"로 두면 원본 클립이 만들어진
+                // 기본 체형 기준 높이가 그대로 쓰여서, 체격이 다른 캐릭터는 공중에 뜬다.
+                clip.keepOriginalPositionY = false;
+                clip.heightFromFeet = true;
             }
             importer.clipAnimations = clips;
 
